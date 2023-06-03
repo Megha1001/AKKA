@@ -470,4 +470,191 @@ public class Main {
 
 }
 ```
+2. ManagerBehavior
+package org.example;
+
+import akka.actor.typed.ActorRef;
+import akka.actor.typed.Behavior;
+import akka.actor.typed.javadsl.AbstractBehavior;
+import akka.actor.typed.javadsl.ActorContext;
+import akka.actor.typed.javadsl.Behaviors;
+import akka.actor.typed.javadsl.Receive;
+
+import java.io.Serializable;
+import java.math.BigInteger;
+import java.util.SortedSet;
+import java.util.TreeSet;
+
+public class ManagerBehavior extends AbstractBehavior<ManagerBehavior.Command> { // accept string message from main system and resulttype from worker behavior that's we created Command as interface
+
+    //To have multiple types
+    public interface Command extends Serializable{}
+    /*
+          Manager should be able to receive two different object type --> not at same time
+          like worker will send big integer but main enter point system will send String
+          1 message from system i.e. start
+          2. big integers from worker
+          we have two ways -->
+              object inheritance
+              interfaces --> will try this
+           */
+    //For system
+    public static class IntructionCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private String message;
+
+        public IntructionCommand(String message) {
+            this.message = message;
+        }
+
+        public String getMessage() { // for making immutable
+            return message;
+        }
+    }
+
+    //for worker
+    public static class ResultCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private BigInteger prime;
+
+        public ResultCommand(BigInteger prime) {
+            this.prime = prime;
+        }
+
+        public BigInteger getPrime() {
+            return prime;
+        }
+    }
+
+    public ManagerBehavior(ActorContext<Command> context) {
+        super(context);
+    }
+
+    public static Behavior<Command> create(){
+        return Behaviors.setup(ManagerBehavior::new);
+    }
+
+    private SortedSet<BigInteger> primes = new TreeSet<BigInteger>();
+    @Override
+    public Receive<Command> createReceive() {
+        /*
+        When we use Command as return type it could be start message from system i.e. InstructionCommand
+        or could be ResultCommand from worker
+         */
+        return newReceiveBuilder()
+                .onMessage(IntructionCommand.class,command->{
+                    if(command.getMessage().equals("start")){
+                        for(int i=0; i<20; i++){
+                            ActorRef<WorkerBehavior.Command> worker=getContext().spawn(WorkerBehavior.create(),"workerBehavior_"+i);
+                            worker.tell(new WorkerBehavior.Command("start", getContext().getSelf())); // message to worker , reference to manager
+                            worker.tell(new WorkerBehavior.Command("start", getContext().getSelf()));
+                        }
+                    }
+                    return this;
+                })
+                .onMessage(ResultCommand.class, command->{
+                    primes.add(command.getPrime());
+                    System.out.println("I have received "+primes.size()+" prime numbers");
+                    if(primes.size() == 20){
+                        /*
+                        when we call worker twice it will print the number twice
+                        since when it is going to become 20 in count at that time too
+                        two messages will be send and for first 20th message worker
+                        will calculate the number and return it back and then it will print the numbers
+                        (all 20) on second message(duplicate 20) it will just return one calculated previously
+                        but still print all the prime number since count is still 20.
+                         */
+                        primes.forEach(System.out::println);
+                    }
+                    return this;
+                })
+//                .onMessageEquals("start",()->{
+//                    for(int i=0; i<10; i++){
+//                       ActorRef<WorkerBehavior.Command> actorRef=getContext().spawn(WorkerBehavior.create(),"workerBehavior_"+i);
+//                       actorRef.tell(new WorkerBehavior.Command("start", getContext().getSelf())); // message to worker , reference to manager
+//                    }
+//                    return this;
+//                })
+                .build();
+    }
+}
+
+3.WorkerBehavior
+package org.example;
+
+import akka.actor.typed.ActorRef;
+import akka.actor.typed.Behavior;
+import akka.actor.typed.javadsl.AbstractBehavior;
+import akka.actor.typed.javadsl.ActorContext;
+import akka.actor.typed.javadsl.Behaviors;
+import akka.actor.typed.javadsl.Receive;
+
+import java.io.Serializable;
+import java.math.BigInteger;
+import java.util.Random;
+
+public class WorkerBehavior extends AbstractBehavior<WorkerBehavior.Command> {
+
+
+    /*
+    This must be serializable, but if we are working on same machine it doesnt matter but if we move
+    to cluster then it will create problem.
+     */
+    public static class Command implements Serializable {
+        private String message;
+        private ActorRef<ManagerBehavior.Command> sender;//manager is expecting String
+        private static final long serialVersionUID=1;
+
+        //Messages should be immutable --> create getter not setters
+
+        public Command(String message, ActorRef<ManagerBehavior.Command> sender) {
+            this.message = message;
+            this.sender = sender;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        public ActorRef<ManagerBehavior.Command> getSender() {
+            return sender;
+        }
+    }
+/*
+Since Worker will going to create instance of Command class hence, we need to make Command class as static
+ */
+
+    private WorkerBehavior(ActorContext<Command> context) {// Worker going to receive Command message
+        super(context);
+    }
+
+    public static Behavior<Command> create(){
+        return Behaviors.setup(WorkerBehavior::new);
+    }
+
+    private BigInteger prime;
+    @Override
+    public Receive<Command> createReceive() {
+        return newReceiveBuilder()
+                .onAnyMessage(command->{
+                    if(command.message.equals("start")){
+                        if(prime == null) {// first time it will calculate next time it will send back the same
+                            BigInteger bigInteger = new BigInteger(2000, new Random());
+                            prime = bigInteger.nextProbablePrime();
+                        }
+                        command.getSender().tell(new ManagerBehavior.ResultCommand(prime));
+//                        System.out.println(bigInteger.nextProbablePrime());
+                    }
+                    return this;
+                })
+//                .onMessageEquals("start",()->{
+//                    BigInteger bigInteger = new BigInteger(2000, new Random());
+//                    System.out.println(bigInteger.nextProbablePrime());
+//                    System.out.println(getContext().getSelf().path());
+//                    return this;
+//                })
+                .build();
+    }
+
+}
 
