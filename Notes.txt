@@ -1,0 +1,31 @@
+Why concurrent programming is difficult
+----------------------------------------
+
+- InterruptedException :- Thrown during calling join method and sleep method on thread
+- ConcurrentModificationException : two or more threads trying to access same variable that isn’t thread safe
+- Thread Blocking
+
+
+THE ACTOR MODEL
+--------------------
+- Different way of concurrent programming
+
+Example : Get the next probable prime number
+
+- **What is an Actor ?**
+    
+    An object with number of key features that has **‘Name’** and **‘Path**
+    
+    **Path** allows has to uniquely identify location of actor
+    
+    **Message queue :** When one actor tells another actor something what happens is that the message, the information being told from one actor to another gets put into that actor queue.
+    
+    **Actors Behaviour :** that tells what to do when an actor receives a message. It could ignore, respond to it, run some code
+    
+    → it takes message from the queue and process it one at a time. so the messages that actor can send or receive are not going to be only strings or numbers. they can be any class that is serialisable.
+  
+  - **Why does this model work ?**
+    - Each actor has its own thread
+    - Actors won’t share data → meaning each actor has its own state, its own data but it wont share that data with any other actor ************so two actor can’t have reference to the same memory space on heap.************ Any variables contained in an actor’s memory space is going to be isolated to that single actor. Because each actor has its own thread there is no sharing of data across threads. ********************************************************→NO ISSUE WITH THREAD SAFETY********************************************************
+    - Actors can send data to each other through messages → Messages must be immutable
+    - Messages are processed one at a time.  → ******************************************************************this saves from Interrupted exception →******************************************************************because an actor can only access the data in its own state, and it wont run any code until the processing is done so there is no chance of Interrupted exception. → Also prevent from **********************************ConcurrentAccess**********************************
