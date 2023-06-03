@@ -1,0 +1,155 @@
+- Racing game
+1. Main class
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class Main {
+
+	static int raceLength = 100;
+	static int displayLength = 160;
+	static long start;
+	
+	private static void displayRace(Map<Integer, Integer> currentPositions) {
+		for (int i = 0; i < 50; ++i) System.out.println();
+		System.out.println("Race has been running for " + ((System.currentTimeMillis() - start) / 1000) + " seconds.");
+		System.out.println("    " + new String (new char[displayLength]).replace('\0', '='));
+		for (int i = 0; i < 10; i++) {
+			System.out.println(i + " : "  + new String (new char[currentPositions.get(i) * displayLength / 100]).replace('\0', '*'));
+		}
+	}
+	 
+
+	public static void main(String[] args) throws InterruptedException {
+		
+		Map<Integer, Integer> currentPositions = new ConcurrentHashMap<Integer, Integer>(); //Thread safe implementation of Map
+		Map<Integer, Long> results = new ConcurrentHashMap<Integer, Long>();
+		
+		start = System.currentTimeMillis();
+		
+		ExecutorService threadPool = Executors.newFixedThreadPool(10);
+		
+		for (int i = 0; i <10; i++) {
+			Racer h = new Racer(i,raceLength, currentPositions, results);
+			currentPositions.put(i, 0);
+			threadPool.execute(h);
+		}
+		
+		boolean finished = false;
+		while (!finished) {
+			Thread.sleep(1000);
+			displayRace(currentPositions);
+			finished = results.size() == 10;
+		}
+		
+		threadPool.shutdownNow();
+				
+		System.out.println("Results");
+		results.values().stream().sorted().forEach(it -> {
+			for (Integer key : results.keySet()) {
+				if (results.get(key) == it) {
+					System.out.println("Racer " + key + " finished in " + ( (double)it - start ) / 1000 + " seconds.");
+				}
+			}
+		});
+	}
+}
+
+2. Racer.java
+import java.util.Map;
+import java.util.Random;
+
+public class Racer implements Runnable{
+
+	private int id;
+	
+	private int raceLength;
+	private Map<Integer, Integer> currentPositions;
+	private Map<Integer, Long> results;
+
+	private final double defaultAverageSpeed = 48.2;
+	private int averageSpeedAdjustmentFactor;
+	private Random random;	
+	
+	private double currentSpeed = 0;
+	private double currentPosition = 0;
+	
+	
+	public Racer(int id, int raceLength, Map<Integer, Integer> currentPositions, Map<Integer, Long> results) {
+		this.id = id;
+		this.raceLength = raceLength;
+		this.currentPositions = currentPositions;
+		this.results = results;
+		random = new Random();
+		averageSpeedAdjustmentFactor = random.nextInt(30) - 10;
+	}
+	
+	private double getMaxSpeed() {
+		return defaultAverageSpeed * (1+((double)averageSpeedAdjustmentFactor / 100));
+	}
+		
+	private double getDistanceMovedPerSecond() {
+		return currentSpeed * 1000 / 3600;
+	}
+	
+	private void determineNextSpeed() {
+		if (currentPosition < (raceLength / 4)) {
+			currentSpeed = currentSpeed  + (((getMaxSpeed() - currentSpeed) / 10) * random.nextDouble());
+		}
+		else {
+			currentSpeed = currentSpeed * (0.5 + random.nextDouble());
+		}
+	
+		if (currentSpeed > getMaxSpeed()) 
+			currentSpeed = getMaxSpeed();
+		
+		if (currentSpeed < 5)
+			currentSpeed = 5;
+		
+		if (currentPosition > (raceLength / 2) && currentSpeed < getMaxSpeed() / 2) {
+			currentSpeed = getMaxSpeed() / 2;
+		}
+	}
+		
+
+	@Override
+	public void run() {
+		
+		while (currentPosition < raceLength) {
+			determineNextSpeed();
+			currentPosition += getDistanceMovedPerSecond();
+			if (currentPosition > raceLength )
+				currentPosition  = raceLength;
+			currentPositions.put(id, (int)currentPosition);
+			try {
+				Thread.sleep(1000);
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+		results.put(id, System.currentTimeMillis());
+		
+	}
+	
+}
+
+
+- We never write Thread.sleep in AKKA since it can throw Interrupted Exception instead we need to rearchitect the code
+    
+    AKKA has facility to repeat sending messages to an actor on regular timed basis
+    
+    Its has a method inside  Behaviors.withTimers
+    
+    return Behaviors.withTimers(timers->{
+	timers.startTimerAtFixedRate(key, instruction, frequency); //It allows you to run perticular piece of code at frequence
+	return this;
+});
+
+
+1. **`startTimerAtFixedRate`**: This method schedules timer events at a fixed rate. It means that after the initial delay, subsequent timer events are scheduled at fixed intervals, regardless of the time taken to process the previous event. For example, if you set the interval to 1 second, the timer event will be triggered every 1 second, regardless of how long it takes to process the previous event. This approach ensures a consistent rate of timer events.
+2. **`startTimerAtFixedDelay`**: This method schedules timer events with a fixed delay. It means that after the initial delay, subsequent timer events are scheduled with a delay that starts counting only after the previous event has been processed. For example, if you set the delay to 1 second, the timer event will be triggered after 1 second of processing the previous event. This approach introduces a delay between consecutive events, ensuring that each event has a fixed gap.
+
+
+
