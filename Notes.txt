@@ -658,3 +658,646 @@ Since Worker will going to create instance of Command class hence, we need to ma
 
 }
 
+Going further with Behaviors
+--------------------------------
+
+→ We are returning mostly this.
+
+what does that mean
+public Receive<Command> createReceive() {
+        return newReceiveBuilder()
+                .onMessage(StartCommand.class,message->{
+                    start = System.currentTimeMillis();
+                    currentPositions = new HashMap<>();
+                    for(int i=0; i<10; i++){
+                       ActorRef<Racer.Command> racer =  getContext().spawn(Racer.create(),"racer"+i);
+                       currentPositions.put(racer,0);
+                       racer.tell(new Racer.StartCommand(raceLength));
+                    }
+                    return Behaviors.withTimers(timers->{
+                        timers.startTimerAtFixedRate(TIMER_KEY,new GetPositionCommand(), Duration.ofSeconds(1));
+                        return this;
+                    });
+                })
+                .onMessage(GetPositionCommand.class,message->{
+                    for(ActorRef<Racer.Command> racer:currentPositions.keySet()){
+                        racer.tell(new Racer.PositionCommand(getContext().getSelf()));
+                        displayRace();
+                    }
+                    return this;
+                })
+                .onMessage(RaceUpdateCommand.class,message->{
+                    currentPositions.put(message.getRacer(),message.getPosition());
+                    return this;
+                })
+                .build();
+    }
+    
+ We return Receive class
+
+this is generic return type. It’s a definition  of receives class that how a behavior process a message. In other words,
+
+when  we finish processing of any message we actually need to return an object which is able to do the processing of the next message. SO the concept we process within an actor can change overtime
+
+**************************************************DIFFERENCE BETWEEN RETURNING THIS AND RETURNING BEHAVIOR.SAME()**************************************************
+
+In Akka, when defining the behavior of an actor using the **`Behaviors`** DSL, returning **`this`** and returning **`Behaviors.same()`** have different implications.
+
+1. Returning **`this`**: When you return **`this`** from the behavior, it means that the actor's behavior remains unchanged. It indicates that the actor will handle the current message and continue using the same behavior for subsequent messages. Essentially, it's saying "stay in the current state and keep using the current behavior."
+2. Returning **`Behaviors.same()`**: The **`Behaviors.same()`** method is used to explicitly indicate that the actor's behavior remains the same. It is similar to returning **`this`**, but it provides a more expressive and self-documenting way of indicating that the behavior remains unchanged. It is commonly used at the end of a behavior to explicitly state that the actor should retain its current behavior for subsequent messages.
+
+
+package org.example;
+
+import akka.actor.typed.ActorRef;
+import akka.actor.typed.Behavior;
+import akka.actor.typed.javadsl.AbstractBehavior;
+import akka.actor.typed.javadsl.ActorContext;
+import akka.actor.typed.javadsl.Behaviors;
+import akka.actor.typed.javadsl.Receive;
+
+import java.io.Serializable;
+import java.math.BigInteger;
+import java.util.Random;
+
+public class WorkerBehavior extends AbstractBehavior<WorkerBehavior.Command> {
+
+
+    /*
+    This must be serializable, but if we are working on same machine it doesnt matter but if we move
+    to cluster then it will create problem.
+     */
+    public static class Command implements Serializable {
+        private String message;
+        private ActorRef<ManagerBehavior.Command> sender;//manager is expecting String
+        private static final long serialVersionUID=1;
+
+        //Messages should be immutable --> create getter not setters
+
+        public Command(String message, ActorRef<ManagerBehavior.Command> sender) {
+            this.message = message;
+            this.sender = sender;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        public ActorRef<ManagerBehavior.Command> getSender() {
+            return sender;
+        }
+    }
+/*
+Since Worker will going to create instance of Command class hence, we need to make Command class as static
+ */
+
+    private WorkerBehavior(ActorContext<Command> context) {// Worker going to receive Command message
+        super(context);
+    }
+
+    public static Behavior<Command> create(){
+        return Behaviors.setup(WorkerBehavior::new);
+    }
+
+    private BigInteger prime;
+    @Override
+    public Receive<Command> createReceive() {
+        return newReceiveBuilder()
+                .onAnyMessage(command->{
+                    if(command.message.equals("start")){
+//                        if(prime == null) {// first time it will calculate next time it will send back the same
+                            BigInteger bigInteger = new BigInteger(2000, new Random());
+                            prime = bigInteger.nextProbablePrime();
+//                        }
+                        command.getSender().tell(new ManagerBehavior.ResultCommand(prime));
+//                        System.out.println(bigInteger.nextProbablePrime());
+                    }
+                    return subsequentHandler(); // call this method when we receive next message
+                })
+//                .onMessageEquals("start",()->{
+//                    BigInteger bigInteger = new BigInteger(2000, new Random());
+//                    System.out.println(bigInteger.nextProbablePrime());
+//                    System.out.println(getContext().getSelf().path());
+//                    return this;
+//                })
+                .build();
+    }
+
+    public Receive<Command> subsequentHandler(){
+        return newReceiveBuilder()
+                .onAnyMessage(command->{
+                command.getSender().tell(new ManagerBehavior.ResultCommand(prime));
+                return this;
+            })
+            .build();
+    }
+
+
+}
+
+LIFECYCLE OF ACTORS
+---------------------
+- Actor can stop themselves by returning Behaviors.stopped() and actor can stop there children by calling getContext().stop(racer)
+    - racer is reference to child actor
+    
+    - Both of above methods stop the actors immediately after the current message has been processed meaning if we have other messaged in queue then those will going to be discarded.
+- if any of the actor gets stopped then automatically all of its child actor also gets stopped.
+- So if we stop the parent then no need to stop the children, but what would’ve happened if one of the child actors had some kind of resource is open we want to insure they are always running in a clean way
+- When a parent actor is stopping it actually first send the signal to all of its child actors that’s about to stop and in the children we can intercept the signal and do something such as close the open resources.
+- The way we do this, its part of the message handler. Although instead of receiving a message, we receives a signal. and the signal type is called **PostStop.**
+
+public Receive<Command> waitingToStop(){
+        return newReceiveBuilder()
+                .onAnyMessage(message-> Behaviors.same())
+                .onSignal(PostStop.class, signal->{
+                    System.out.println("I'm about to terminate!");
+                    return Behaviors.same();
+                })
+                .build();
+    }
+    
+    we have some other signal types as well but those are advance.
+    
+ LOGGING
+ -------
+ Using getContext().getLog()
+ public Receive<Command> waitingToStop(){
+        return newReceiveBuilder()
+                .onAnyMessage(message-> Behaviors.same())
+                .onSignal(PostStop.class, signal->{
+                    getContext().getLog().info("I'm about to terminate!");
+                    return Behaviors.same();
+                })
+                .build();
+    }
+    
+    
+ AKKA recommends to use logback
+ <configuration>
+
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{YYYY-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <root level="warn">
+    <appender-ref ref="STDOUT" />
+  </root>
+</configuration>
+
+Interaction Patterns
+-----------------------
+
+There are two ways in which actors can communicate with each other
+
+→ Default pattern —> Fire and Forget
+
+→ Request - Response
+
+In this we need to ensure that within the request message, we have an ActorRef, a reference to sender, so receipent can use that to send its reply to it.
+
+Its also called as Request-adapted response
+
+But something we haven’t yet able to do is get data out of the AKKA system.
+
+That is the main method the one that is setting up the Akka system. and sending the first actor message to do some work, has right now got no way of getting any data back from that first actor. The first actor cannot tell main method anything. so how to do that ??
+
+so there is **interaction pattern** that we need to know about first.
+
+// Ask pattern
+    private void askWorkerForAPrime(ActorRef<WorkerBehavior.Command> worker){
+        //to send message using ask method instead of tell.
+        getContext().ask(Command.class,worker, Duration.ofSeconds(5),
+//                (me)->new WorkerBehavior.Command("start", getContext().getSelf()), // we can also use 'me'
+                (me)->new WorkerBehavior.Command("start", me),
+                (response, throwable)->{// // what we are going to do if we get a response or if we dont get a response.
+                    /*
+                    we are not going to be process message, we process message in the messagehandler(up)
+                    Here we say yes, that fine there's a message send it to message handler or we are going to say that is wont a message
+
+                    if we get a response which is either an instance of command or null
+                     */
+
+                    if(response != null){// got the response in valid time from worker
+                            return response;
+                    }else{ // we have something hasn't gone right
+                        // return something out of here implement command
+                        System.out.println("Worker "+worker.path()+" failed to response.");
+                        return new NoResponseReceivedCommand(worker);
+                    }
+                });
+
+    }
+    
+ package org.example;
+
+import akka.actor.typed.ActorRef;
+import akka.actor.typed.Behavior;
+import akka.actor.typed.javadsl.AbstractBehavior;
+import akka.actor.typed.javadsl.ActorContext;
+import akka.actor.typed.javadsl.Behaviors;
+import akka.actor.typed.javadsl.Receive;
+
+import java.io.Serializable;
+import java.math.BigInteger;
+import java.time.Duration;
+import java.util.SortedSet;
+import java.util.TreeSet;
+
+public class ManagerBehavior extends AbstractBehavior<ManagerBehavior.Command> { // accept string message from main system and resulttype from worker behavior that's we created Command as interface
+
+    //To have multiple types
+    public interface Command extends Serializable{}
+    /*
+          Manager should be able to receive two different object type --> not at same time
+          like worker will send big integer but main enter point system will send String
+          1 message from system i.e. start
+          2. big integers from worker
+          we have two ways -->
+              object inheritance
+              interfaces --> will try this
+           */
+    //For system
+    public static class IntructionCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private String message;
+
+        public IntructionCommand(String message) {
+            this.message = message;
+        }
+
+        public String getMessage() { // for making immutable
+            return message;
+        }
+    }
+
+    //for worker
+    public static class ResultCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private BigInteger prime;
+
+        public ResultCommand(BigInteger prime) {
+            this.prime = prime;
+        }
+
+        public BigInteger getPrime() {
+            return prime;
+        }
+    }
+
+    private  class NoResponseReceivedCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private ActorRef<WorkerBehavior.Command> worker;
+
+        public NoResponseReceivedCommand(ActorRef<WorkerBehavior.Command> worker) {
+            this.worker = worker;
+        }
+
+        public ActorRef<WorkerBehavior.Command> getWorker() {
+            return worker;
+        }
+    }
+    public ManagerBehavior(ActorContext<Command> context) {
+        super(context);
+    }
+
+    public static Behavior<Command> create(){
+        return Behaviors.setup(ManagerBehavior::new);
+    }
+
+    private SortedSet<BigInteger> primes = new TreeSet<BigInteger>();
+    @Override
+    public Receive<Command> createReceive() {
+        /*
+        When we use Command as return type it could be start message from system i.e. InstructionCommand
+        or could be ResultCommand from worker
+         */
+        return newReceiveBuilder()
+                .onMessage(IntructionCommand.class,command->{
+                    if(command.getMessage().equals("start")){
+                        for(int i=0; i<20; i++){
+                            ActorRef<WorkerBehavior.Command> worker=getContext().spawn(WorkerBehavior.create(),"workerBehavior_"+i);
+//                            worker.tell(new WorkerBehavior.Command("start", getContext().getSelf())); // message to worker , reference to manager
+//                            worker.tell(new WorkerBehavior.Command("start", getContext().getSelf()));
+                            askWorkerForAPrime(worker);
+                        }
+                    }
+                    return this;
+                })
+                .onMessage(ResultCommand.class, command->{
+                    primes.add(command.getPrime());
+                    System.out.println("I have received "+primes.size()+" prime numbers");
+                    if(primes.size() == 20){
+                        /*
+                        when we call worker twice it will print the number twice
+                        since when it is going to become 20 in count at that time too
+                        two messages will be send and for first 20th message worker
+                        will calculate the number and return it back and then it will print the numbers
+                        (all 20) on second message(duplicate 20) it will just return one calculated previously
+                        but still print all the prime number since count is still 20.
+                         */
+                        primes.forEach(System.out::println);
+                    }
+                    return Behaviors.same();
+                })
+//                .onMessageEquals("start",()->{
+//                    for(int i=0; i<10; i++){
+//                       ActorRef<WorkerBehavior.Command> actorRef=getContext().spawn(WorkerBehavior.create(),"workerBehavior_"+i);
+//                       actorRef.tell(new WorkerBehavior.Command("start", getContext().getSelf())); // message to worker , reference to manager
+//                    }
+//                    return this;
+//                })
+                .onMessage(NoResponseReceivedCommand.class,command->{
+                    System.out.println("Retrying with worker :"+command.getWorker().path());
+                    askWorkerForAPrime(command.getWorker());
+                    return Behaviors.same();
+
+                })
+                .build();
+    }
+
+    // Ask pattern
+    private void askWorkerForAPrime(ActorRef<WorkerBehavior.Command> worker){
+        //to send message using ask method instead of tell.
+        getContext().ask(Command.class,worker, Duration.ofSeconds(5),
+//                (me)->new WorkerBehavior.Command("start", getContext().getSelf()), // we can also use 'me'
+                (me)->new WorkerBehavior.Command("start", me),
+                (response, throwable)->{// // what we are going to do if we get a response or if we dont get a response.
+                    /*
+                    we are not going to be process message, we process message in the messagehandler(up)
+                    Here we say yes, that fine there's a message send it to message handler or we are going to say that is wont a message
+
+                    if we get a response which is either an instance of command or null
+                     */
+
+                    if(response != null){// got the response in valid time from worker
+                            return response;
+                    }else{ // we have something hasn't gone right
+                        // return something out of here implement command
+                        System.out.println("Worker "+worker.path()+" failed to response.");
+                        return new NoResponseReceivedCommand(worker);
+                    }
+                });
+
+    }
+}
+
+1. GETTING DATA OUT OF AKKA
+    
+    From Ask pattern there is a way to use it from outside of Akka i.e we dont have to be an actor to use the ask pattern. in other words we can use the ask pattern from our main method and that gives the actor system a way of responding back to the main method. Its a way of getting data out of akka
+    
+    1. Main method
+    package org.example;
+
+import akka.actor.typed.ActorSystem;
+import akka.actor.typed.javadsl.AskPattern;
+
+import java.math.BigInteger;
+import java.time.Duration;
+import java.util.SortedSet;
+import java.util.concurrent.CompletionStage;
+
+public class Main {
+
+
+//    public static void main(String[] args){
+//        //To instantiate the first actor in the system call ActorSystem, pick one from akka.actor.typed
+//        //1- parameter is the instance of  Behavior that we want our actor to have
+//        //2- parameter -> Name of actor
+//        // ActorSystem<String> --> it is generic type that defines the type of messages our actor can receive
+//        ActorSystem<String> actorSystem = ActorSystem.create(FirstSimpleBehavior.create(),"FirstActorSystem");
+////        ActorSystem<String> actorSystem1 = ActorSystem.create(FirstSimpleBehavior.create(),"FirstActorSystem");
+//        /* ActorSystem is the wrapper that will act as an entry point to Akka. Actors can create more actors
+//        or child actors but will always communicate through the very first actor we create the one we called the
+//        ActorSystem
+//        ActorSytem = Actor with few extra features
+//        * */
+//        actorSystem.tell("say hello");
+//        actorSystem.tell("who are you");//--->akka://FirstActorSystem/user
+////        actorSystem1.tell("who are you");
+//        /*Akka allows creating multiple actor systems with the same name. While it is not a recommended practice, Akka does not enforce uniqueness of actor system names. The behavior may vary depending on the specific version and configuration of Akka being used.*/
+//        actorSystem.tell("Hello are you there ?");
+//        actorSystem.tell("This is the second message");
+//
+//        /*
+//        When we instantiated actorSystem we actually created an actor with name, path , message queue
+//        and set of behavior(FirstBehavior.create())
+//         */
+//
+//        /*
+//        One we execute the class the application will keeps on running until we shut it down
+//        why --> because our actor can receive multiple messages
+//        we can stop it programmatically
+//         */
+//
+//
+//        /*
+//        ActorName cannot contain spaces since it will be a part of URL
+//         */
+//
+//        actorSystem.tell("create a child");
+//    }
+
+    public static void main(String[] args) {
+        ActorSystem<ManagerBehavior.Command> bigPrimes= ActorSystem.create(ManagerBehavior.create(),"BigPrimes");
+//        bigPrimes.tell("start");
+
+//        bigPrimes.tell(new ManagerBehavior.IntructionCommand("start"));
+        CompletionStage<SortedSet<BigInteger>>result = AskPattern.ask(bigPrimes, (me)->new ManagerBehavior.IntructionCommand("start", me),
+                Duration.ofSeconds(20),
+                bigPrimes.scheduler());
+
+        // execute when manager responded or timeout/time is elapsed(20sec)
+        result.whenComplete(
+                (reply, failure)->{
+                    if(reply != null){
+                        // reply is our sorted set
+                        reply.forEach(System.out::println);
+                    }else{
+                        System.out.println("System didn't respond in time.");
+                    }
+                    bigPrimes.terminate();
+                }
+        );
+        /*
+        Manager should able to receive two different object type --> not at same time
+        like worker will send big integer but main enter point system will send String
+        1 message from system i.e. start
+        2. big integers from worker
+        we have two ways -->
+            object inheritance
+            interfaces --> will try this
+         */
+    }
+
+    /*
+    Actor can receive any message that is serializable
+     */
+
+}
+2. ManagerBehavior
+package org.example;
+
+import akka.actor.typed.ActorRef;
+import akka.actor.typed.Behavior;
+import akka.actor.typed.javadsl.AbstractBehavior;
+import akka.actor.typed.javadsl.ActorContext;
+import akka.actor.typed.javadsl.Behaviors;
+import akka.actor.typed.javadsl.Receive;
+
+import java.io.Serializable;
+import java.math.BigInteger;
+import java.time.Duration;
+import java.util.SortedSet;
+import java.util.TreeSet;
+
+public class ManagerBehavior extends AbstractBehavior<ManagerBehavior.Command> { // accept string message from main system and resulttype from worker behavior that's we created Command as interface
+
+    //To have multiple types
+    public interface Command extends Serializable{}
+    /*
+          Manager should be able to receive two different object type --> not at same time
+          like worker will send big integer but main enter point system will send String
+          1 message from system i.e. start
+          2. big integers from worker
+          we have two ways -->
+              object inheritance
+              interfaces --> will try this
+           */
+    //For system
+    public static class IntructionCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private String message;
+        private ActorRef<SortedSet<BigInteger>> sender;
+
+        public IntructionCommand(String message,ActorRef<SortedSet<BigInteger>> sender ) {
+            this.message = message;
+            this.sender = sender;
+        }
+
+        public ActorRef<SortedSet<BigInteger>> getSender() {
+            return sender;
+        }
+
+        public String getMessage() { // for making immutable
+            return message;
+        }
+    }
+
+    //for worker
+    public static class ResultCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private BigInteger prime;
+
+        public ResultCommand(BigInteger prime) {
+            this.prime = prime;
+        }
+
+        public BigInteger getPrime() {
+            return prime;
+        }
+    }
+
+    private  class NoResponseReceivedCommand implements  Command{
+        public static final long serialVersionUID = 1L;
+        private ActorRef<WorkerBehavior.Command> worker;
+
+        public NoResponseReceivedCommand(ActorRef<WorkerBehavior.Command> worker) {
+            this.worker = worker;
+        }
+
+        public ActorRef<WorkerBehavior.Command> getWorker() {
+            return worker;
+        }
+    }
+    public ManagerBehavior(ActorContext<Command> context) {
+        super(context);
+    }
+
+    public static Behavior<Command> create(){
+        return Behaviors.setup(ManagerBehavior::new);
+    }
+
+    private SortedSet<BigInteger> primes = new TreeSet<BigInteger>();
+    private ActorRef<SortedSet<BigInteger>> sender;
+    @Override
+    public Receive<Command> createReceive() {
+        /*
+        When we use Command as return type it could be start message from system i.e. InstructionCommand
+        or could be ResultCommand from worker
+         */
+        return newReceiveBuilder()
+                .onMessage(IntructionCommand.class,command->{
+                    if(command.getMessage().equals("start")){
+                        this.sender = command.getSender();
+                        for(int i=0; i<20; i++){
+                            ActorRef<WorkerBehavior.Command> worker=getContext().spawn(WorkerBehavior.create(),"workerBehavior_"+i);
+//                            worker.tell(new WorkerBehavior.Command("start", getContext().getSelf())); // message to worker , reference to manager
+//                            worker.tell(new WorkerBehavior.Command("start", getContext().getSelf()));
+                            askWorkerForAPrime(worker);
+                        }
+                    }
+                    return this;
+                })
+                .onMessage(ResultCommand.class, command->{
+                    primes.add(command.getPrime());
+                    System.out.println("I have received "+primes.size()+" prime numbers");
+//                    if(primes.size() == 20){
+//                        /*
+//                        when we call worker twice it will print the number twice
+//                        since when it is going to become 20 in count at that time too
+//                        two messages will be send and for first 20th message worker
+//                        will calculate the number and return it back and then it will print the numbers
+//                        (all 20) on second message(duplicate 20) it will just return one calculated previously
+//                        but still print all the prime number since count is still 20.
+//                         */
+//                        primes.forEach(System.out::println);
+//                    }
+                    //send the list of primes to the main method
+                    if(primes.size()==20){
+                        this.sender.tell(primes);
+                    }
+                    return Behaviors.same();
+                })
+//                .onMessageEquals("start",()->{
+//                    for(int i=0; i<10; i++){
+//                       ActorRef<WorkerBehavior.Command> actorRef=getContext().spawn(WorkerBehavior.create(),"workerBehavior_"+i);
+//                       actorRef.tell(new WorkerBehavior.Command("start", getContext().getSelf())); // message to worker , reference to manager
+//                    }
+//                    return this;
+//                })
+                .onMessage(NoResponseReceivedCommand.class,command->{
+                    System.out.println("Retrying with worker :"+command.getWorker().path());
+                    askWorkerForAPrime(command.getWorker());
+                    return Behaviors.same();
+
+                })
+                .build();
+    }
+
+    // Ask pattern
+    private void askWorkerForAPrime(ActorRef<WorkerBehavior.Command> worker){
+        //to send message using ask method instead of tell.
+        getContext().ask(Command.class,worker, Duration.ofSeconds(5),
+//                (me)->new WorkerBehavior.Command("start", getContext().getSelf()), // we can also use 'me'
+                (me)->new WorkerBehavior.Command("start", me),
+                (response, throwable)->{// // what we are going to do if we get a response or if we dont get a response.
+                    /*
+                    we are not going to be process message, we process message in the messagehandler(up)
+                    Here we say yes, that fine there's a message send it to message handler or we are going to say that is wont a message
+
+                    if we get a response which is either an instance of command or null
+                     */
+
+                    if(response != null){// got the response in valid time from worker
+                            return response;
+                    }else{ // we have something hasn't gone right
+                        // return something out of here implement command
+                        System.out.println("Worker "+worker.path()+" failed to response.");
+                        return new NoResponseReceivedCommand(worker);
+                    }
+                });
+
+    }
+}
